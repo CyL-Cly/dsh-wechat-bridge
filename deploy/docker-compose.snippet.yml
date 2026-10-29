@@ -1,6 +1,6 @@
 # 追加到 home 上 wechat 栈（示意）。与 client_<ROBOT_CODE> 同网。
 # 本机 openresty: proxy_pass http://127.0.0.1:8787;
-# 并 proxy_set_header X-Bridge-Secret <BRIDGE_WEBHOOK_SECRET>;
+# Webhook 鉴权可选；若设置了 BRIDGE_WEBHOOK_SECRET 再加 X-Bridge-Secret 头。
 
 services:
   dsh-wechat-bridge:

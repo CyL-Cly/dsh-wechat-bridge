@@ -1,0 +1,58 @@
+diff --git a/packages/client/connection/src/browser-auth.ts b/packages/client/connection/src/browser-auth.ts
+index 5c8594df..fde25067 100644
+--- a/packages/client/connection/src/browser-auth.ts
++++ b/packages/client/connection/src/browser-auth.ts
+@@ -21,6 +21,18 @@ const STORED_SECRET_VERSION = 1
+ const BASE64URL_PATTERN = /^[A-Za-z0-9_-]*$/
+ const PROCESS_LAUNCH_TOKENS = new WeakMap<object, string>()
+ 
++/**
++ * Local / reverse-proxy deployments: skip launch-token + cookie gate for the Web UI.
++ * Enable with DSH_WEB_NO_TOKEN=1 (or DSH_BROWSER_AUTH=disabled).
++ * OpenResty can proxy_pass to the bind port without ?token= from `dsh web` stdout.
++ */
++function webNoTokenEnabled(): boolean {
++  const noToken = (process.env.DSH_WEB_NO_TOKEN ?? '').trim().toLowerCase()
++  if (['1', 'true', 'yes', 'on'].includes(noToken)) return true
++  const browserAuth = (process.env.DSH_BROWSER_AUTH ?? '').trim().toLowerCase()
++  return ['disabled', 'off', 'none', '0', 'false'].includes(browserAuth)
++}
++
+ interface StoredSecretPayload {
+   readonly version: typeof STORED_SECRET_VERSION
+   readonly secret: string
+@@ -242,6 +254,7 @@ export class BrowserAuth {
+    * @returns the same URL carrying the process token as its sole authentication input.
+    */
+   authenticatedUrl(baseUrl: string): string {
++    if (webNoTokenEnabled()) return baseUrl
+     const url = new URL(baseUrl)
+     url.searchParams.set(TOKEN_QUERY, this.launchToken)
+     return url.href
+@@ -263,6 +276,18 @@ export class BrowserAuth {
+   authorizeIndex(req: ConnectionIndexRequest, res: ConnectionIndexResponse, secure = false): boolean {
+     /* v8 ignore next -- node:http always supplies url on server requests. */
+     const url = new URL(req.url ?? '/', 'http://dsh.invalid')
++    if (webNoTokenEnabled()) {
++      if (url.searchParams.has(TOKEN_QUERY) && req.method === 'GET') {
++        res.writeHead(303, {
++          'cache-control': 'no-store',
++          'location': './',
++          'referrer-policy': 'no-referrer',
++        })
++        res.end()
++        return false
++      }
++      return true
++    }
+     const tokens = url.searchParams.getAll(TOKEN_QUERY)
+     if (tokens.length > 0) {
+       const authority = requestAudience(req.headers, secure)
+@@ -354,6 +379,7 @@ export class BrowserAuth {
+    * @returns true only for an unexpired cookie signed by this activation's loaded secret.
+    */
+   isAuthenticated(request: ConnectionTrustRequest, secure = false): boolean {
++    if (webNoTokenEnabled()) return true
+     return this.authenticate(request, secure)?.version === COOKIE_PAYLOAD_VERSION
+   }
+ 

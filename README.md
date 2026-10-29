@@ -57,7 +57,7 @@ http://<bridge主机>:8787/webhook
 http://dsh-wechat-bridge:8787/webhook
 ```
 
-**必填**鉴权（无 token → 启动时自动生成写入 `.env`）：`BRIDGE_WEBHOOK_SECRET` 或 `ACCESS_TOKEN`。
+**可选**鉴权：`BRIDGE_WEBHOOK_SECRET` 或 `ACCESS_TOKEN`（空 = 不鉴权，本机/反代场景可省略）。
 缺省/错误 token 的 `/webhook` 返回 **401**。
 
 `webhook_headers`（wechat-robot-client）示例：`X-Bridge-Secret: <token>`，或 `Authorization: Bearer <token>`。
@@ -100,7 +100,7 @@ AGENT_MODE=sdk DEEPSEEK_API_KEY=sk-... npm start
 |------|------|
 | `BRIDGE_HOST` | 默认 `127.0.0.1`（本机 openresty）；Docker 内用 `0.0.0.0` |
 | `BRIDGE_PORT` | 默认 `8787` |
-| `BRIDGE_WEBHOOK_SECRET` / `ACCESS_TOKEN` | **必填**；空则首次启动自动生成 |
+| `BRIDGE_WEBHOOK_SECRET` / `ACCESS_TOKEN` | 可选；空 = webhook 不鉴权 |
 | `WECHAT_CLIENT_BASE_URL` | 如 `http://127.0.0.1:9001` 或 `http://client_<CODE>:9001` |
 | `AGENT_MODE` | `sdk`（默认）或 `echo` |
 | `DSH_BIN` | 本地 dsh；空则解析 npm `@deepseek-ai/dsh` |
@@ -164,3 +164,21 @@ scripts/       echo 冒烟
 ## 许可
 
 桥接代码 MIT。DeepSeek Harness / wechat-robot-client 遵循各自上游；`wechat-ipad` 闭源。
+
+
+## DeepSeek Harness Web UI 免 token（`DSH_WEB_NO_TOKEN`）
+
+默认 `dsh web` 会打印带 `?token=` 的一次性登录 URL，并靠 cookie 鉴权。本机 + OpenResty 反代时通常希望**浏览器直接打开、无需 token**。
+
+1. 在 `/opt/deepseek-harness` 应用 `packages/client/connection` 的免鉴权补丁（见 `deploy/dsh-web-no-token.patch`），或对已安装的 `@deepseek-ai/dsh-client-connection` 打同等补丁。
+2. 启动前设置：
+
+```bash
+export DSH_WEB_NO_TOKEN=1
+# 等价：export DSH_BROWSER_AUTH=disabled
+dsh web --host 127.0.0.1 --port 3080
+```
+
+3. OpenResty 反代示例（无 token 查询串）：见 `deploy/openresty-dsh-web.conf`。
+
+桥接服务本身默认监听 `127.0.0.1:8787`，与 Web UI 端口无关；勿把 `BRIDGE_WEBHOOK_SECRET` 当成 Web UI 登录凭据。

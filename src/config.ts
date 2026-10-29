@@ -1,7 +1,5 @@
 import { config as loadDotenv } from 'dotenv'
-import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { randomBytes } from 'node:crypto'
 
 loadDotenv()
 
@@ -29,7 +27,7 @@ export type AgentMode = 'sdk' | 'echo'
 export interface BridgeConfig {
   host: string
   port: number
-  /** Required shared secret for webhook/API (BRIDGE_WEBHOOK_SECRET or ACCESS_TOKEN). */
+  /** Optional shared secret for webhook/API (BRIDGE_WEBHOOK_SECRET or ACCESS_TOKEN). Empty = open. */
   accessToken: string
   wechatClientBaseUrl: string
   wechatClientApiToken: string
@@ -47,46 +45,12 @@ export interface BridgeConfig {
   sessionScope: 'chat' | 'chat_sender'
 }
 
-/** Resolve token: BRIDGE_WEBHOOK_SECRET > ACCESS_TOKEN. Empty → generate & persist. */
-export function resolveAccessToken(cwd = process.cwd()): string {
-  const fromEnv =
+/** Optional: BRIDGE_WEBHOOK_SECRET or ACCESS_TOKEN. Empty = no webhook auth. */
+export function resolveAccessToken(_cwd = process.cwd()): string {
+  return (
     (process.env.BRIDGE_WEBHOOK_SECRET ?? '').trim() ||
     (process.env.ACCESS_TOKEN ?? '').trim()
-  if (fromEnv) return fromEnv
-
-  const token = randomBytes(32).toString('hex')
-  const envPath = resolve(cwd, '.env')
-  const line = `BRIDGE_WEBHOOK_SECRET=${token}\n`
-  try {
-    if (existsSync(envPath)) {
-      const cur = readFileSync(envPath, 'utf8')
-      if (/^BRIDGE_WEBHOOK_SECRET=/m.test(cur)) {
-        writeFileSync(
-          envPath,
-          cur.replace(/^BRIDGE_WEBHOOK_SECRET=.*$/m, `BRIDGE_WEBHOOK_SECRET=${token}`),
-          'utf8',
-        )
-      } else if (/^ACCESS_TOKEN=/m.test(cur)) {
-        writeFileSync(
-          envPath,
-          cur.replace(/^ACCESS_TOKEN=.*$/m, `ACCESS_TOKEN=${token}`),
-          'utf8',
-        )
-      } else {
-        appendFileSync(envPath, `\n# auto-generated — required webhook auth\n${line}`, 'utf8')
-      }
-    } else {
-      writeFileSync(envPath, `# auto-generated — required webhook auth\n${line}`, 'utf8')
-    }
-  } catch (err) {
-    console.error('[dsh-wechat-bridge] failed to persist generated token to .env:', err)
-  }
-  process.env.BRIDGE_WEBHOOK_SECRET = token
-  console.warn(
-    '[dsh-wechat-bridge] no BRIDGE_WEBHOOK_SECRET/ACCESS_TOKEN — generated and wrote to .env',
   )
-  console.warn(`[dsh-wechat-bridge] token (keep secret): ${token}`)
-  return token
 }
 
 export function loadConfig(cwd = process.cwd()): BridgeConfig {
@@ -94,11 +58,6 @@ export function loadConfig(cwd = process.cwd()): BridgeConfig {
   const agentMode: AgentMode = mode === 'echo' ? 'echo' : 'sdk'
   const scope = (process.env.SESSION_SCOPE ?? 'chat_sender').toLowerCase()
   const accessToken = resolveAccessToken(cwd)
-  if (!accessToken) {
-    throw new Error(
-      'BRIDGE_WEBHOOK_SECRET or ACCESS_TOKEN is required (no-token → require token)',
-    )
-  }
   return {
     // Prefer 127.0.0.1 so host openresty can proxy_pass http://127.0.0.1:8787
     // (Docker compose should set BRIDGE_HOST=0.0.0.0 and publish 127.0.0.1:8787:8787)

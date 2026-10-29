@@ -27,10 +27,10 @@ function queryOf(url: URL): WebhookQuery {
   }
 }
 
-/** Required: X-Bridge-Secret / X-Webhook-Secret / Authorization: Bearer <token> */
+/** Optional: when accessToken set, require X-Bridge-Secret / X-Webhook-Secret / Bearer. Empty token = open. */
 function checkSecret(req: IncomingMessage): boolean {
   const expected = cfg.accessToken
-  if (!expected) return false
+  if (!expected) return true
   const h =
     req.headers['x-bridge-secret'] ??
     req.headers['x-webhook-secret'] ??
@@ -107,7 +107,7 @@ const server = createServer((req, res) => {
           service: 'dsh-wechat-bridge',
           agentMode: cfg.agentMode,
           profile: cfg.dshProfile,
-          auth: 'required',
+          auth: cfg.accessToken ? 'optional-token' : 'open',
         })
         return
       }
