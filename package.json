@@ -12,10 +12,10 @@
     "dev": "tsx src/index.ts",
     "start": "node dist/index.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "install:dsh": "npm install @deepseek-ai/dsh@0.2.1-rc.2"
+    "install:dsh": "npm install @deepseek-ai/dsh@0.2.1-rc.3"
   },
   "dependencies": {
-    "@deepseek-ai/dsh-sdk-client": "0.0.1-rc.1",
+    "@deepseek-ai/dsh-sdk-client": "0.2.1-rc.3",
     "dotenv": "^16.6.1"
   },
   "devDependencies": {
@@ -24,6 +24,6 @@
     "typescript": "^5.9.2"
   },
   "optionalDependencies": {
-    "@deepseek-ai/dsh": "0.2.1-rc.2"
+    "@deepseek-ai/dsh": "0.2.1-rc.3"
   }
 }
