@@ -2,6 +2,13 @@
 
 用 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（`dsh`）替换 [wechat-robot-client](https://github.com/hp0912/wechat-robot-client) **内置 AI 对话**，协议收发仍走闭源 `wechat-ipad`，客户端容器继续负责登录与发消息。
 
+- GitHub：https://github.com/CyL-Cly/dsh-wechat-bridge
+- home 推荐克隆（代理）：
+
+```bash
+git clone https://v6.gh-proxy.org/github.com/CyL-Cly/dsh-wechat-bridge.git /opt/dsh-wechat-bridge
+```
+
 ```
 微信 ←→ wechat-ipad ←→ wechat-robot-client
                               │ webhook（system_settings.webhook_url）
@@ -11,8 +18,6 @@
                               ▼
                      wechat-robot-client → wechat-ipad → 微信
 ```
-
-本仓库是 **本地适配 fork / sibling**，尚未推 GitHub（需授权后再 `git remote add` 推送）。
 
 ---
 
@@ -34,36 +39,27 @@
 ### 1. 管理后台关掉内置聊天 AI
 
 - 全局设置：`chat_ai_enabled = false`
-- 各群/好友若单独开了 AI，一并关掉  
-  （否则内置插件与 bridge 会双回复）
+- 各群/好友若单独开了 AI，一并关掉（否则会双回复）
 
 绘图 / TTS / 拍一拍 / 欢迎等可继续用内置，不冲突。
 
 ### 2. 配置消息 Webhook
 
-客户端会在同步到新消息后 `POST` 整包 `SyncMessage` 到 `system_settings.webhook_url`，并自动带上：
+客户端同步到新消息后 `POST` 整包 `SyncMessage` 到 `system_settings.webhook_url`，并带上：
 
 `?robot_id=&robot_code=&robot_wxid=`
 
-（实现：`service/message.go` → `MessageWebhook`）
-
-把 URL 设为 bridge：
+（`service/message.go` → `MessageWebhook`）
 
 ```text
 http://<bridge主机>:8787/webhook
-```
-
-同 Docker 网络示例：
-
-```text
+# Docker 同网：
 http://dsh-wechat-bridge:8787/webhook
 ```
 
-可选在 `webhook_headers` 里加 `X-Bridge-Secret: <同 BRIDGE_WEBHOOK_SECRET>`。
+可选 `webhook_headers`：`X-Bridge-Secret` = `BRIDGE_WEBHOOK_SECRET`。
 
-### 3. 确认发消息 API
-
-bridge 回写：
+### 3. 发消息 API
 
 ```http
 POST {WECHAT_CLIENT_BASE_URL}/api/v1/robot/message/send/text
@@ -72,23 +68,23 @@ Content-Type: application/json
 {"to_wxid":"<会话wxid>","content":"...","at":["群内发送者wxid"]}
 ```
 
-对应 `router`：`/api/v1/robot/message/send/text`。
-
 ---
 
-## 在本机（box）构建运行
+## 构建运行
 
 ```bash
-cd /workspace/dsh-wechat-bridge
 cp .env.example .env
-# 先联调可 AGENT_MODE=echo（不拉 dsh）
-pnpm install   # 或 npm install
-pnpm run build
-pnpm start
-# 开发：pnpm dev
+npm install          # 核心：sdk-client；不强制装完整 dsh
+npm run build
+# 先通链路：
+AGENT_MODE=echo npm start
+# 真推理：
+npm run install:dsh  # 可选依赖 @deepseek-ai/dsh（体积大）
+# 或 DSH_BIN 指向源码构建产物
+AGENT_MODE=sdk DEEPSEEK_API_KEY=sk-... npm start
 ```
 
-健康检查：`GET http://127.0.0.1:8787/health`  
+健康检查：`GET /health`  
 冒烟：`./scripts/smoke-echo.sh`
 
 ### 环境变量（摘要）
@@ -96,57 +92,43 @@ pnpm start
 | 变量 | 说明 |
 |------|------|
 | `BRIDGE_PORT` | 默认 `8787` |
-| `BRIDGE_WEBHOOK_SECRET` | 可选，校验 webhook header |
-| `WECHAT_CLIENT_BASE_URL` | 客户端根地址，如 `http://127.0.0.1:9001` |
+| `BRIDGE_WEBHOOK_SECRET` | 可选 |
+| `WECHAT_CLIENT_BASE_URL` | 如 `http://127.0.0.1:9001` 或 `http://client_<CODE>:9001` |
 | `AGENT_MODE` | `sdk`（默认）或 `echo` |
-| `DSH_BIN` | 本地 `dsh` 可执行；空则用 npm `@deepseek-ai/dsh` |
-| `DSH_HOME` | harness 数据目录 |
-| `DSH_PROFILE` | 默认 `sdk` |
+| `DSH_BIN` | 本地 dsh；空则解析 npm `@deepseek-ai/dsh` |
+| `DSH_HOME` / `DSH_PROFILE` | 默认 `./.dsh-home` / `sdk` |
 | `DSH_PROVIDER` / `DSH_MODEL` | 如 `deepseek-official` / `deepseek-v4-flash` |
-| `DEEPSEEK_API_KEY` | 模型密钥 |
-| `AI_TRIGGER` | 群聊触发前缀；空=群也全量（不推荐） |
+| `DEEPSEEK_API_KEY` | sdk 模式必需 |
+| `AI_TRIGGER` | 群聊触发前缀；空=群也全量 |
 | `SESSION_SCOPE` | `chat_sender`（默认）或 `chat` |
 
-完整列表见 `.env.example`。
+详见 `.env.example`。
 
 ---
 
-## 与 `/workspace/deepseek-harness` 的关系
-
-| 路径 | 角色 |
-|------|------|
-| `/workspace/deepseek-harness` | 上游浅克隆，本地分支 `wechat-bridge`，见其 `WECHAT.md` |
-| `/workspace/dsh-wechat-bridge` | **推荐部署单元**：HTTP + SDK 客户端 |
-| `plugin/` | Cordis 占位插件，默认可不启用 |
-
-源码构建 dsh（可选，磁盘/内存够时）：
+## 部署到 home（`/opt`）
 
 ```bash
-cd /workspace/deepseek-harness
-pnpm install && pnpm run build
-# 然后在 bridge .env：
-# DSH_BIN=/workspace/deepseek-harness/apps/cli/... 或 node 入口
+git clone https://v6.gh-proxy.org/github.com/CyL-Cly/dsh-wechat-bridge.git /opt/dsh-wechat-bridge
+cd /opt/dsh-wechat-bridge
+cp .env.example .env
+# 编辑 WECHAT_CLIENT_BASE_URL、DEEPSEEK_API_KEY、AI_TRIGGER 等
+npm ci && npm run build
+# 需要 sdk 模式时：
+npm run install:dsh
+# 参考 deploy/docker-compose.snippet.yml 挂进 wechat 网络
+# 后台：关 chat_ai_enabled；webhook_url → http://dsh-wechat-bridge:8787/webhook
 ```
 
-box 上整仓 install 较重（依赖多、内存吃紧），联调优先用 npm 预构建包 + `AGENT_MODE=echo` 测通道。
+现有栈通常在 `/opt/wechat-robot-client`。
 
 ---
 
-## 拷到 home（`/opt`）
+## 与 deepseek-harness 源码的关系
 
-在 **用户明确授权 SSH 操作之后**（本轮只在 box 改）：
+本仓库是 **sibling HTTP bridge**（推荐部署单元），不是整仓 fork 推送。
 
-```bash
-# 示例
-rsync -av --exclude node_modules --exclude .dsh-home \
-  /workspace/dsh-wechat-bridge/ home:/opt/dsh-wechat-bridge/
-# home 上：
-cd /opt/dsh-wechat-bridge && cp .env.example .env && npm ci && npm run build
-# 按 deploy/docker-compose.snippet.yml 挂进现有网络
-# 管理后台：关 chat_ai_enabled；webhook_url → http://dsh-wechat-bridge:8787/webhook
-```
-
-现有部署根目录通常是 `/opt/wechat-robot-client`（含 client/server 容器）。
+本地 box 另有浅克隆 `/workspace/deepseek-harness`（分支 `wechat-bridge` + `WECHAT.md`），可选作 `DSH_BIN` 源。`plugin/` 是 Cordis 占位，默认可不启用。
 
 ---
 
@@ -154,23 +136,23 @@ cd /opt/dsh-wechat-bridge && cp .env.example .env && npm ci && npm run build
 
 ```
 src/           HTTP webhook + dsh SDK + 发消息
-plugin/        可选 Cordis 插件脚手架
+plugin/        可选 Cordis 脚手架
 deploy/        compose 片段
 scripts/       echo 冒烟
 ```
 
 ---
 
-## 阻塞项
+## 已知限制 / 阻塞
 
-1. **GitHub fork 推送**：当前未授权 `cursor-github`；仓库已 `git init`，可稍后加 remote 推送。  
-2. **DEEPSEEK_API_KEY / dsh credentials**：`AGENT_MODE=sdk` 必需。  
-3. **home 拷贝与 Docker 组网**：需用户批准 SSH/不可逆部署后再做。  
-4. **整仓 dsh `pnpm install`**：box 可用内存偏低时建议跳过，用 npm 发行版 `dsh`。  
-5. 群聊触发词、会话隔离、多机器人多端口：按 `.env` 调；图片/语音入站未做（`TEXT_ONLY=true`）。
+1. **`AGENT_MODE=sdk`** 需要 `DEEPSEEK_API_KEY`（或 dsh credentials）+ 可解析的 `dsh`（`npm run install:dsh` 或 `DSH_BIN`）。  
+2. **home Docker 组网 / 关内置 AI** 需在目标机操作（本仓库只提供步骤与 compose 片段）。  
+3. **`@deepseek-ai/dsh` 可选依赖** 树很大；内存紧时先 `AGENT_MODE=echo` 通 webhook→发消息。  
+4. 目前只处理文本（`TEXT_ONLY=true`）；图片/语音未接入。  
+5. 上游 dsh 仍处开发者预览，API 可能破坏性变更。
 
 ---
 
 ## 许可
 
-桥接代码 MIT（可自定）。DeepSeek Harness / wechat-robot-client 遵循各自上游许可；`wechat-ipad` 闭源。
+桥接代码 MIT。DeepSeek Harness / wechat-robot-client 遵循各自上游；`wechat-ipad` 闭源。
