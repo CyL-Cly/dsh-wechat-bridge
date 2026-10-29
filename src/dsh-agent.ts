@@ -10,13 +10,27 @@ export interface AgentReply {
   text: string
 }
 
+/** One SDK session handle (resumeSession / session().run). */
+type HarnessSessionLike = {
+  id: string
+  run: (
+    input: string,
+  ) => Promise<{ sessionId: string; finalResponse: string }>
+}
+
+/**
+ * Structural shape of DeepSeekHarness from @deepseek-ai/dsh-sdk-client.
+ * Newer clients expose resumeSession; older ones only have client.request.
+ */
 type HarnessLike = {
+  start: () => Promise<void>
+  close: () => Promise<void>
+  session: (sessionId?: string) => HarnessSessionLike
+  resumeSession?: (sessionId: string) => Promise<HarnessSessionLike>
   run: (
     input: string,
     opts?: { sessionId?: string },
   ) => Promise<{ sessionId: string; finalResponse: string }>
-  close: () => Promise<void>
-  start: () => Promise<void>
   client: {
     request: (method: string, params?: Record<string, unknown>) => Promise<unknown>
   }
@@ -70,20 +84,46 @@ function sdkClientIsModern(): boolean {
  * Hand WeChat turns to a local `dsh --profile sdk` subprocess that shares the
  * same DSH_HOME as `dsh web`, so sessions show up in the Web UI.
  * The bridge never POSTs to DeepSeek chat/completions itself.
+ *
+ * Session pattern matches DeepSeekHarness IM/SDK usage and cc-haha adapters:
+ * keep one process-wide harness, persist chat→session ids, reuse the same
+ * HarnessSession handle for follow-ups, resume from disk after restart,
+ * never resume+create the same id (that double-opens the write handle).
  */
 function errText(err: unknown): string {
   if (err instanceof Error) return err.message
   return String(err)
 }
 
+/** Persistence create race / identity already on disk. */
 function isSessionAlreadyExists(err: unknown): boolean {
   return /session .+ already exists/i.test(errText(err))
 }
 
+/** SDK child already has this id open (in-process). */
+function isSessionAlreadyOpen(err: unknown): boolean {
+  return /already open or opening/i.test(errText(err))
+}
+
+/** Write handle held — usually another process (e.g. dsh-web) or a stale open. */
+function isSessionAlreadyOwned(err: unknown): boolean {
+  return /already owned by an active write handle/i.test(errText(err))
+}
+
+function isResumeMissingOrUnreadable(err: unknown): boolean {
+  const t = errText(err)
+  // Missing / unreadable / incompatible — fall through to lazy create.
+  return /not found|no such|missing|does not exist|unreadable|incompatible|unknown session|ENOENT|no session|cannot resume|failed to (open|load|read)/i.test(
+    t,
+  )
+}
+
 export class DshAgent {
   private harness: HarnessLike | null = null
-  /** Sessions opened (created or resumed) in this process — skip resume next time. */
-  private readonly liveSessions = new Set<string>()
+  /** Live HarnessSession handles opened in THIS process — reuse, do not resume again. */
+  private readonly sessions = new Map<string, HarnessSessionLike>()
+  /** In-flight open promises so parallel first messages share one resume/create. */
+  private readonly opening = new Map<string, Promise<HarnessSessionLike>>()
 
   constructor(private readonly cfg: BridgeConfig) {}
 
@@ -130,20 +170,104 @@ export class DshAgent {
   }
 
   /**
-   * After bridge restart the dsh child is new; session/prompt always create()s
-   * when the id is not in memory, which throws if the id already lives on disk.
-   * Prefer session/resume first for known ids, then prompt.
+   * resumeSession when available; else low-level session/resume + session(id).
+   * Never pair this with harness.run({sessionId}) create — that re-opens the write handle.
    */
-  private async ensureSessionReady(sessionId: string): Promise<void> {
-    if (!this.harness || this.liveSessions.has(sessionId)) return
+  private async resumeFromDisk(sessionId: string): Promise<HarnessSessionLike> {
+    const harness = this.harness
+    if (!harness) throw new Error('dsh harness not started')
+    if (typeof harness.resumeSession === 'function') {
+      return harness.resumeSession(sessionId)
+    }
+    await harness.start()
+    await harness.client.request('session/resume', { sessionId })
+    return harness.session(sessionId)
+  }
+
+  private lazyCreate(sessionId: string): HarnessSessionLike {
+    if (!this.harness) throw new Error('dsh harness not started')
+    return this.harness.session(sessionId)
+  }
+
+  /**
+   * Obtain a session handle for this wx_ id:
+   * 1. Reuse in-process map (IM live reconnect).
+   * 2. Prefer resumeSession for persisted ids after bridge restart.
+   * 3. If already open in our sdk child → session(id) only.
+   * 4. If missing/unreadable → lazy session(id) create on first prompt.
+   * 5. If owned by another process → one short backoff retry, then clear error.
+   */
+  private async getSession(sessionId: string): Promise<HarnessSessionLike> {
+    const existing = this.sessions.get(sessionId)
+    if (existing) return existing
+
+    const inflight = this.opening.get(sessionId)
+    if (inflight) return inflight
+
+    const task = this.openSession(sessionId)
+    this.opening.set(sessionId, task)
     try {
-      await this.harness.start()
-      await this.harness.client.request('session/resume', { sessionId })
-      this.liveSessions.add(sessionId)
+      const session = await task
+      this.sessions.set(sessionId, session)
+      return session
+    } finally {
+      this.opening.delete(sessionId)
+    }
+  }
+
+  private async openSession(sessionId: string): Promise<HarnessSessionLike> {
+    try {
+      const session = await this.resumeFromDisk(sessionId)
       console.log(`[dsh-agent] resumed session=${sessionId}`)
+      return session
     } catch (err) {
-      // Missing / unreadable session → leave to session/prompt create path.
-      console.log(`[dsh-agent] resume skip session=${sessionId}: ${errText(err).slice(0, 160)}`)
+      if (isSessionAlreadyOpen(err)) {
+        console.log(`[dsh-agent] already open in sdk child session=${sessionId}, reuse handle`)
+        return this.lazyCreate(sessionId)
+      }
+
+      if (isSessionAlreadyOwned(err)) {
+        // Another process (often dsh-web) may hold the write lease briefly.
+        console.log(
+          `[dsh-agent] write handle owned session=${sessionId}, brief backoff then retry resume once`,
+        )
+        await new Promise((r) => setTimeout(r, 400))
+        try {
+          const session = await this.resumeFromDisk(sessionId)
+          console.log(`[dsh-agent] resumed after backoff session=${sessionId}`)
+          return session
+        } catch (retryErr) {
+          if (isSessionAlreadyOpen(retryErr)) {
+            return this.lazyCreate(sessionId)
+          }
+          if (isSessionAlreadyOwned(retryErr)) {
+            throw new Error(
+              `session ${sessionId} 正被其他进程占用（例如 dsh-web 打开了同一会话）。请关闭 Web UI 中该会话后重试。`,
+            )
+          }
+          // Missing after backoff → create path below
+          if (!isResumeMissingOrUnreadable(retryErr) && !isSessionAlreadyExists(retryErr)) {
+            throw retryErr
+          }
+          console.log(
+            `[dsh-agent] resume still unavailable session=${sessionId}: ${errText(retryErr).slice(0, 160)}`,
+          )
+        }
+      } else if (isSessionAlreadyExists(err)) {
+        // Disk identity exists but resume path said exists — attach lazy handle; first
+        // prompt recover path will resume if create races.
+        console.log(`[dsh-agent] session exists on disk session=${sessionId}, attaching handle`)
+        return this.lazyCreate(sessionId)
+      } else if (isResumeMissingOrUnreadable(err)) {
+        console.log(
+          `[dsh-agent] resume miss session=${sessionId}: ${errText(err).slice(0, 160)}; lazy create`,
+        )
+        return this.lazyCreate(sessionId)
+      } else {
+        throw err
+      }
+
+      return this.lazyCreate(sessionId)
     }
   }
 
@@ -161,21 +285,40 @@ export class DshAgent {
     await this.ensureStarted()
     if (!this.harness) throw new Error('dsh harness not started')
 
-    await this.ensureSessionReady(sessionId)
+    const session = await this.getSession(sessionId)
 
     try {
-      const result = await this.harness.run(prompt, { sessionId })
-      this.liveSessions.add(sessionId)
+      const result = await session.run(prompt)
       const text = (result.finalResponse ?? '').trim() || '（dsh 返回空内容）'
       return { sessionId: result.sessionId || sessionId, text }
     } catch (err) {
-      if (!isSessionAlreadyExists(err)) throw err
-      console.log(`[dsh-agent] create raced existing session=${sessionId}, resume+retry`)
-      await this.harness.client.request('session/resume', { sessionId })
-      this.liveSessions.add(sessionId)
-      const result = await this.harness.run(prompt, { sessionId })
-      const text = (result.finalResponse ?? '').trim() || '（dsh 返回空内容）'
-      return { sessionId: result.sessionId || sessionId, text }
+      // First prompt on a lazy handle can race a disk identity: drop map entry
+      // and resume once, then run again — never resume while already running create.
+      if (isSessionAlreadyExists(err) || isSessionAlreadyOwned(err)) {
+        console.log(
+          `[dsh-agent] prompt hit ${isSessionAlreadyOwned(err) ? 'owned' : 'exists'} session=${sessionId}, recover via resume`,
+        )
+        this.sessions.delete(sessionId)
+        let recovered: HarnessSessionLike
+        try {
+          recovered = await this.resumeFromDisk(sessionId)
+        } catch (resumeErr) {
+          if (isSessionAlreadyOpen(resumeErr)) {
+            recovered = this.lazyCreate(sessionId)
+          } else if (isSessionAlreadyOwned(resumeErr)) {
+            throw new Error(
+              `session ${sessionId} 正被其他进程占用（例如 dsh-web 打开了同一会话）。请关闭 Web UI 中该会话后重试。`,
+            )
+          } else {
+            throw resumeErr
+          }
+        }
+        this.sessions.set(sessionId, recovered)
+        const result = await recovered.run(prompt)
+        const text = (result.finalResponse ?? '').trim() || '（dsh 返回空内容）'
+        return { sessionId: result.sessionId || sessionId, text }
+      }
+      throw err
     }
   }
 
@@ -191,10 +334,11 @@ export class DshAgent {
   }
 
   async close(): Promise<void> {
+    this.sessions.clear()
+    this.opening.clear()
     if (this.harness) {
       await this.harness.close()
       this.harness = null
     }
-    this.liveSessions.clear()
   }
 }
