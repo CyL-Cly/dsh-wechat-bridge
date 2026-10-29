@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { loadConfig } from './config.js'
 import { DshAgent } from './dsh-agent.js'
-import { DedupeCache } from './session-map.js'
+import { DedupeCache, sessionIdFor } from './session-map.js'
 import { extractInboundTexts } from './webhook.js'
 import { WechatRobotClient } from './wechat-client.js'
 import type { SyncMessagePayload, WebhookQuery } from './types.js'
@@ -10,6 +10,17 @@ const cfg = loadConfig()
 const agent = new DshAgent(cfg)
 const wechat = new WechatRobotClient(cfg)
 const dedupe = new DedupeCache()
+/** 同一 session 串行，避免连发时并行 harness.run 互相覆盖、都按最新一条回 */
+const sessionQueues = new Map<string, Promise<void>>()
+
+function enqueueSession(sessionKey: string, task: () => Promise<void>): void {
+  const prev = sessionQueues.get(sessionKey) ?? Promise.resolve()
+  const next = prev.catch(() => undefined).then(task)
+  sessionQueues.set(sessionKey, next)
+  void next.finally(() => {
+    if (sessionQueues.get(sessionKey) === next) sessionQueues.delete(sessionKey)
+  })
+}
 
 async function readJson(req: IncomingMessage): Promise<unknown> {
   const chunks: Buffer[] = []
@@ -69,7 +80,8 @@ async function handleWebhook(req: IncomingMessage, res: ServerResponse, url: URL
       console.log(`[dedupe] skip ${msg.dedupeKey}`)
       continue
     }
-    void processOne(msg)
+    const sessionKey = sessionIdFor(msg, cfg.sessionScope)
+    enqueueSession(sessionKey, () => processOne(msg))
   }
 }
 
