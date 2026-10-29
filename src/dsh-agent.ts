@@ -1,3 +1,6 @@
+import { readFileSync, existsSync } from 'node:fs'
+import { join } from 'node:path'
+import { createRequire } from 'node:module'
 import type { BridgeConfig } from './config.js'
 import type { InboundTextMessage } from './types.js'
 import { sessionIdFor } from './session-map.js'
@@ -15,9 +18,54 @@ type HarnessLike = {
   close: () => Promise<void>
 }
 
+interface ModelRoute {
+  provider: string
+  model: string
+}
+
 /**
- * 封装 dsh SDK。AGENT_MODE=echo 时不拉起子进程，方便联调 webhook/发消息。
- * sdk 模式惰性 import @deepseek-ai/dsh-sdk-client。
+ * Read provider/model from a dsh profile's cordis.patch.yml (agent-default-model).
+ * Bridge does not call DeepSeek HTTP or invent model ids — local dsh config does.
+ */
+export function readAgentDefaultModel(patchPath: string): ModelRoute | null {
+  if (!existsSync(patchPath)) return null
+  const text = readFileSync(patchPath, 'utf8')
+  const block = text.match(/id:\s*agent-default-model[\s\S]*?(?=\n-\s*id:|\n*$)/)
+  if (!block) return null
+  const provider = block[0].match(/\bprovider:\s*([^\s#]+)/)?.[1]
+  const model = block[0].match(/\bmodel:\s*([^\s#]+)/)?.[1]
+  if (!provider || !model) return null
+  return { provider, model }
+}
+
+/** Resolve model route from shared DSH_HOME profiles; env pair is escape hatch only. */
+export function resolveModelRoute(dshHome: string, cfg: BridgeConfig): ModelRoute {
+  for (const name of ['web', cfg.dshProfile, 'sdk'].filter(Boolean)) {
+    const hit = readAgentDefaultModel(join(dshHome, 'profiles', name, 'cordis.patch.yml'))
+    if (hit) return hit
+  }
+  if (cfg.dshProvider && cfg.dshModel) {
+    return { provider: cfg.dshProvider, model: cfg.dshModel }
+  }
+  return { provider: 'deepseek-official', model: 'deepseek-flash' }
+}
+
+function sdkClientIsModern(): boolean {
+  try {
+    const req = createRequire(import.meta.url)
+    const pkg = req('@deepseek-ai/dsh-sdk-client/package.json') as { version?: string }
+    const ver = pkg.version ?? ''
+    // 0.0.1-rc.1 is launch-shaped; newer source builds accept profile/dshHome.
+    return Boolean(ver) && !ver.startsWith('0.0.1')
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Hand WeChat turns to a local `dsh --profile sdk` subprocess that shares the
+ * same DSH_HOME as `dsh web`, so sessions show up in the Web UI.
+ * The bridge never POSTs to DeepSeek chat/completions itself.
  */
 export class DshAgent {
   private harness: HarnessLike | null = null
@@ -28,19 +76,40 @@ export class DshAgent {
     if (this.cfg.agentMode === 'echo') return
     if (this.harness) return
 
-    if (this.cfg.deepseekApiKey && !process.env.DEEPSEEK_API_KEY) {
-      process.env.DEEPSEEK_API_KEY = this.cfg.deepseekApiKey
-    }
-
     const { DeepSeekHarness } = await import('@deepseek-ai/dsh-sdk-client')
-    const options: Record<string, unknown> = {
-      profile: this.cfg.dshProfile,
-      provider: this.cfg.dshProvider,
-      model: this.cfg.dshModel,
-      dshHome: this.cfg.dshHome,
-    }
-    if (this.cfg.dshBin) options.dshBin = this.cfg.dshBin
-    if (this.cfg.dshPatches.length) options.patches = this.cfg.dshPatches
+    const dshHome = this.cfg.dshHome
+    const dshBin = this.cfg.dshBin || 'dsh'
+    const profile = this.cfg.dshProfile || 'sdk'
+    const route = resolveModelRoute(dshHome, this.cfg)
+    const cwd = this.cfg.agentCwd
+
+    console.log(
+      `[dsh-agent] handoff -> local dsh profile=${profile} home=${dshHome} route=${route.provider}/${route.model}`,
+    )
+
+    const options = sdkClientIsModern()
+      ? {
+          profile,
+          dshBin,
+          dshHome,
+          cwd,
+          processCwd: cwd,
+          provider: route.provider,
+          model: route.model,
+          initializeTimeoutMs: 120_000,
+        }
+      : {
+          launch: {
+            command: dshBin,
+            args: ['--profile', profile],
+            cwd,
+            // Inherit credentials/env from the host; only pin DSH_HOME.
+            env: { ...process.env, DSH_HOME: dshHome },
+          },
+          cwd,
+          provider: route.provider,
+          model: route.model,
+        }
 
     this.harness = new DeepSeekHarness(options as never) as unknown as HarnessLike
   }

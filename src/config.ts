@@ -1,5 +1,6 @@
 import { config as loadDotenv } from 'dotenv'
-import { resolve } from 'node:path'
+import { homedir } from 'node:os'
+import { join, resolve } from 'node:path'
 
 loadDotenv()
 
@@ -36,13 +37,23 @@ export interface BridgeConfig {
   textOnly: boolean
   agentMode: AgentMode
   dshBin: string
+  /** Shared with `dsh web` so WeChat sessions appear in the UI. */
   dshHome: string
   dshProfile: string
+  /** Optional escape hatch; empty → read agent-default-model from dshHome profiles. */
   dshProvider: string
   dshModel: string
-  deepseekApiKey: string
   dshPatches: string[]
+  /** Workspace cwd recorded on SDK sessions. */
+  agentCwd: string
   sessionScope: 'chat' | 'chat_sender'
+}
+
+/** Shared home with dsh web: $DSH_HOME or ~/.dsh (never a bridge-private tree by default). */
+export function defaultDshHome(cwd = process.cwd()): string {
+  const fromEnv = (process.env.DSH_HOME ?? '').trim()
+  if (fromEnv) return resolve(cwd, fromEnv)
+  return join(homedir(), '.dsh')
 }
 
 /** Optional: BRIDGE_WEBHOOK_SECRET or ACCESS_TOKEN. Empty = no webhook auth. */
@@ -59,8 +70,6 @@ export function loadConfig(cwd = process.cwd()): BridgeConfig {
   const scope = (process.env.SESSION_SCOPE ?? 'chat_sender').toLowerCase()
   const accessToken = resolveAccessToken(cwd)
   return {
-    // Prefer 127.0.0.1 so host openresty can proxy_pass http://127.0.0.1:8787
-    // (Docker compose should set BRIDGE_HOST=0.0.0.0 and publish 127.0.0.1:8787:8787)
     host: process.env.BRIDGE_HOST ?? '127.0.0.1',
     port: num('BRIDGE_PORT', 8787),
     accessToken,
@@ -74,12 +83,14 @@ export function loadConfig(cwd = process.cwd()): BridgeConfig {
     textOnly: bool('TEXT_ONLY', true),
     agentMode,
     dshBin: process.env.DSH_BIN ?? '',
-    dshHome: resolve(cwd, process.env.DSH_HOME ?? './.dsh-home'),
+    // Default: same home as `dsh web` (~/.dsh), NOT a private ./`.dsh-home`.
+    dshHome: defaultDshHome(cwd),
     dshProfile: process.env.DSH_PROFILE ?? 'sdk',
-    dshProvider: process.env.DSH_PROVIDER ?? 'deepseek-official',
-    dshModel: process.env.DSH_MODEL ?? 'deepseek-v4-flash',
-    deepseekApiKey: process.env.DEEPSEEK_API_KEY ?? '',
+    // Empty = resolve from $DSH_HOME/profiles/*/cordis.patch.yml agent-default-model.
+    dshProvider: (process.env.DSH_PROVIDER ?? '').trim(),
+    dshModel: (process.env.DSH_MODEL ?? '').trim(),
     dshPatches: list('DSH_PATCHES').map((p) => resolve(cwd, p)),
+    agentCwd: resolve(cwd, process.env.AGENT_CWD ?? cwd),
     sessionScope: scope === 'chat' ? 'chat' : 'chat_sender',
   }
 }

@@ -13,10 +13,12 @@ git clone https://v6.gh-proxy.org/github.com/CyL-Cly/dsh-wechat-bridge.git /opt/
 微信 ←→ wechat-ipad ←→ wechat-robot-client
                               │ webhook（system_settings.webhook_url）
                               ▼
-                     dsh-wechat-bridge  ←→  dsh --profile sdk（DeepSeekHarness）
-                              │ POST /api/v1/robot/message/send/text
+                     dsh-wechat-bridge
+                              │ DeepSeekHarness → `dsh --profile sdk`
+                              │ 共享 DSH_HOME（与 `dsh web` 相同，默认 ~/.dsh）
+                              │ 会话出现在 Web UI；桥不直接调 DeepSeek HTTP
                               ▼
-                     wechat-robot-client → wechat-ipad → 微信
+                     回复文本 → POST wechat-robot-client /message/send/text → 微信
 ```
 
 ---
@@ -104,9 +106,9 @@ AGENT_MODE=sdk DEEPSEEK_API_KEY=sk-... npm start
 | `WECHAT_CLIENT_BASE_URL` | 如 `http://127.0.0.1:9001` 或 `http://client_<CODE>:9001` |
 | `AGENT_MODE` | `sdk`（默认）或 `echo` |
 | `DSH_BIN` | 本地 dsh；空则解析 npm `@deepseek-ai/dsh` |
-| `DSH_HOME` / `DSH_PROFILE` | 默认 `./.dsh-home` / `sdk` |
-| `DSH_PROVIDER` / `DSH_MODEL` | 如 `deepseek-official` / `deepseek-v4-flash` |
-| `DEEPSEEK_API_KEY` | sdk 模式必需 |
+| `DSH_HOME` / `DSH_PROFILE` | **须与 `dsh web` 相同**（默认 `~/.dsh`）/ `sdk` |
+| `DSH_PROVIDER` / `DSH_MODEL` | 可选；空则读 `$DSH_HOME/profiles/*/cordis.patch.yml` 的 `agent-default-model` |
+| `DEEPSEEK_API_KEY` | **不要配在桥上**；凭据放 dsh home（Web / `.credentials.yaml`） |
 | `AI_TRIGGER` | 群聊触发前缀；空=群也全量 |
 | `SESSION_SCOPE` | `chat_sender`（默认）或 `chat` |
 
@@ -153,7 +155,7 @@ scripts/       echo 冒烟
 
 ## 已知限制 / 阻塞
 
-1. **`AGENT_MODE=sdk`** 需要 `DEEPSEEK_API_KEY`（或 dsh credentials）+ 可解析的 `dsh`（`npm run install:dsh` 或 `DSH_BIN`）。  
+1. **`AGENT_MODE=sdk`** 需要本机可执行的 `dsh`（`DSH_BIN`）+ 与 Web 共享的 `DSH_HOME`；模型/密钥由 dsh 配置，桥不直连 DeepSeek HTTP。  
 2. **home Docker 组网 / 关内置 AI** 需在目标机操作（本仓库只提供步骤与 compose 片段）。  
 3. **`@deepseek-ai/dsh` 可选依赖** 树很大；内存紧时先 `AGENT_MODE=echo` 通 webhook→发消息。  
 4. 目前只处理文本（`TEXT_ONLY=true`）；图片/语音未接入。  
