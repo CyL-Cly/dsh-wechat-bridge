@@ -1,0 +1,25 @@
+{
+  "name": "dsh-wechat-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DeepSeek Harness ↔ wechat-robot-client HTTP bridge：用 dsh 替换内置 AI 对话",
+  "type": "module",
+  "engines": {
+    "node": ">=24.9.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx src/index.ts",
+    "start": "node dist/index.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@deepseek-ai/dsh-sdk-client": "0.0.1-rc.1",
+    "dotenv": "^16.6.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.5.2",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2"
+  }
+}

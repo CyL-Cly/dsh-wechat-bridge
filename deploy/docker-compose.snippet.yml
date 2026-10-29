@@ -1,0 +1,28 @@
+# 追加到 home 上 /opt/wechat-robot-client 相关 compose（示意）。
+# 与 client_<ROBOT_CODE> 同 Docker 网络，用服务名互访。
+
+services:
+  dsh-wechat-bridge:
+    image: node:24-bookworm
+    working_dir: /app
+    volumes:
+      - /opt/dsh-wechat-bridge:/app
+      - dsh_home:/app/.dsh-home
+    environment:
+      BRIDGE_HOST: 0.0.0.0
+      BRIDGE_PORT: 8787
+      WECHAT_CLIENT_BASE_URL: http://client_xtmVDa0yiGNMDeGy:9001
+      AGENT_MODE: sdk
+      DSH_PROFILE: sdk
+      DSH_PROVIDER: deepseek-official
+      DSH_MODEL: deepseek-v4-flash
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY}
+      AI_TRIGGER: ""
+      IGNORE_SELF: "true"
+    command: ["bash", "-lc", "npm ci && npm run build && npm start"]
+    ports:
+      - "8787:8787"
+    restart: unless-stopped
+
+volumes:
+  dsh_home:

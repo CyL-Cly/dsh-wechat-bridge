@@ -1,0 +1,10 @@
+# 可选：挂到 dsh --profile sdk --patch 上的本地插件占位。
+# 当前生产路径是 sibling HTTP bridge（src/），本文件给后续「进程内 Cordis 入站」预留。
+# 把下面 path 换成绝对路径后再启用。
+
+- insert:
+    - id: wechat-bridge-note
+      name: !!js `${process.cwd()}/plugin/src/wechat-ingress.ts`
+      config:
+        enabled: false
+        note: 'HTTP bridge 已接管入站；此 Cordis 插件默认不启用'
