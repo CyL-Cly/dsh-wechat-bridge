@@ -42,7 +42,7 @@ function walk(dir, out = []) {
 
 function patchFile(path) {
   let src = readFileSync(path, 'utf8')
-  if (src.includes(MARKER) && src.includes('webNoTokenEnabled')) {
+  if (src.includes('webNoTokenEnabled')) {
     console.log('[skip already patched]', path)
     return false
   }
