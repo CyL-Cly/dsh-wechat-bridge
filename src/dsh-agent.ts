@@ -16,6 +16,10 @@ type HarnessLike = {
     opts?: { sessionId?: string },
   ) => Promise<{ sessionId: string; finalResponse: string }>
   close: () => Promise<void>
+  start: () => Promise<void>
+  client: {
+    request: (method: string, params?: Record<string, unknown>) => Promise<unknown>
+  }
 }
 
 interface ModelRoute {
@@ -67,8 +71,19 @@ function sdkClientIsModern(): boolean {
  * same DSH_HOME as `dsh web`, so sessions show up in the Web UI.
  * The bridge never POSTs to DeepSeek chat/completions itself.
  */
+function errText(err: unknown): string {
+  if (err instanceof Error) return err.message
+  return String(err)
+}
+
+function isSessionAlreadyExists(err: unknown): boolean {
+  return /session .+ already exists/i.test(errText(err))
+}
+
 export class DshAgent {
   private harness: HarnessLike | null = null
+  /** Sessions opened (created or resumed) in this process — skip resume next time. */
+  private readonly liveSessions = new Set<string>()
 
   constructor(private readonly cfg: BridgeConfig) {}
 
@@ -114,6 +129,24 @@ export class DshAgent {
     this.harness = new DeepSeekHarness(options as never) as unknown as HarnessLike
   }
 
+  /**
+   * After bridge restart the dsh child is new; session/prompt always create()s
+   * when the id is not in memory, which throws if the id already lives on disk.
+   * Prefer session/resume first for known ids, then prompt.
+   */
+  private async ensureSessionReady(sessionId: string): Promise<void> {
+    if (!this.harness || this.liveSessions.has(sessionId)) return
+    try {
+      await this.harness.start()
+      await this.harness.client.request('session/resume', { sessionId })
+      this.liveSessions.add(sessionId)
+      console.log(`[dsh-agent] resumed session=${sessionId}`)
+    } catch (err) {
+      // Missing / unreadable session → leave to session/prompt create path.
+      console.log(`[dsh-agent] resume skip session=${sessionId}: ${errText(err).slice(0, 160)}`)
+    }
+  }
+
   async reply(msg: InboundTextMessage): Promise<AgentReply> {
     const sessionId = sessionIdFor(msg, this.cfg.sessionScope)
     const prompt = this.buildPrompt(msg)
@@ -128,9 +161,22 @@ export class DshAgent {
     await this.ensureStarted()
     if (!this.harness) throw new Error('dsh harness not started')
 
-    const result = await this.harness.run(prompt, { sessionId })
-    const text = (result.finalResponse ?? '').trim() || '（dsh 返回空内容）'
-    return { sessionId: result.sessionId || sessionId, text }
+    await this.ensureSessionReady(sessionId)
+
+    try {
+      const result = await this.harness.run(prompt, { sessionId })
+      this.liveSessions.add(sessionId)
+      const text = (result.finalResponse ?? '').trim() || '（dsh 返回空内容）'
+      return { sessionId: result.sessionId || sessionId, text }
+    } catch (err) {
+      if (!isSessionAlreadyExists(err)) throw err
+      console.log(`[dsh-agent] create raced existing session=${sessionId}, resume+retry`)
+      await this.harness.client.request('session/resume', { sessionId })
+      this.liveSessions.add(sessionId)
+      const result = await this.harness.run(prompt, { sessionId })
+      const text = (result.finalResponse ?? '').trim() || '（dsh 返回空内容）'
+      return { sessionId: result.sessionId || sessionId, text }
+    }
   }
 
   private buildPrompt(msg: InboundTextMessage): string {
@@ -149,5 +195,6 @@ export class DshAgent {
       await this.harness.close()
       this.harness = null
     }
+    this.liveSessions.clear()
   }
 }
