@@ -27,16 +27,18 @@ function queryOf(url: URL): WebhookQuery {
   }
 }
 
+/** Required: X-Bridge-Secret / X-Webhook-Secret / Authorization: Bearer <token> */
 function checkSecret(req: IncomingMessage): boolean {
-  if (!cfg.webhookSecret) return true
+  const expected = cfg.accessToken
+  if (!expected) return false
   const h =
     req.headers['x-bridge-secret'] ??
     req.headers['x-webhook-secret'] ??
     req.headers.authorization
   const val = Array.isArray(h) ? h[0] : h
   if (!val) return false
-  if (val === cfg.webhookSecret) return true
-  if (val === `Bearer ${cfg.webhookSecret}`) return true
+  if (val === expected) return true
+  if (val === `Bearer ${expected}`) return true
   return false
 }
 
@@ -48,7 +50,7 @@ function send(res: ServerResponse, status: number, body: unknown): void {
 
 async function handleWebhook(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
   if (!checkSecret(req)) {
-    send(res, 401, { ok: false, error: 'unauthorized' })
+    send(res, 401, { ok: false, error: 'unauthorized', hint: 'missing or wrong token' })
     return
   }
   const body = (await readJson(req)) as SyncMessagePayload
@@ -98,12 +100,14 @@ const server = createServer((req, res) => {
     try {
       const host = req.headers.host ?? `127.0.0.1:${cfg.port}`
       const url = new URL(req.url ?? '/', `http://${host}`)
+      // /health stays open for openresty / probe (no secrets in body)
       if (req.method === 'GET' && (url.pathname === '/health' || url.pathname === '/')) {
         send(res, 200, {
           ok: true,
           service: 'dsh-wechat-bridge',
           agentMode: cfg.agentMode,
           profile: cfg.dshProfile,
+          auth: 'required',
         })
         return
       }
@@ -123,7 +127,12 @@ server.listen(cfg.port, cfg.host, () => {
   console.log(
     `[dsh-wechat-bridge] http://${cfg.host}:${cfg.port} mode=${cfg.agentMode} -> ${cfg.wechatClientBaseUrl}`,
   )
-  console.log(`[dsh-wechat-bridge] webhook: POST /webhook  (set system_settings.webhook_url)`)
+  console.log(
+    `[dsh-wechat-bridge] webhook: POST /webhook  (auth: X-Bridge-Secret or Authorization: Bearer)`,
+  )
+  console.log(
+    `[dsh-wechat-bridge] openresty: proxy_pass http://127.0.0.1:${cfg.port}; + proxy_set_header X-Bridge-Secret <token>;`,
+  )
 })
 
 async function shutdown(signal: string): Promise<void> {

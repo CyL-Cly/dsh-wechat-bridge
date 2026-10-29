@@ -57,7 +57,14 @@ http://<bridge主机>:8787/webhook
 http://dsh-wechat-bridge:8787/webhook
 ```
 
-可选 `webhook_headers`：`X-Bridge-Secret` = `BRIDGE_WEBHOOK_SECRET`。
+**必填**鉴权（无 token → 启动时自动生成写入 `.env`）：`BRIDGE_WEBHOOK_SECRET` 或 `ACCESS_TOKEN`。
+缺省/错误 token 的 `/webhook` 返回 **401**。
+
+`webhook_headers`（wechat-robot-client）示例：`X-Bridge-Secret: <token>`，或 `Authorization: Bearer <token>`。
+
+openresty（同机）示例见 `deploy/openresty-snippet.conf`：
+`proxy_pass http://127.0.0.1:8787;` + `proxy_set_header X-Bridge-Secret <token>;`
+监听：默认 `BRIDGE_HOST=127.0.0.1` / `BRIDGE_PORT=8787`（Docker 内用 `0.0.0.0`，发布 `127.0.0.1:8787:8787`）。
 
 ### 3. 发消息 API
 
@@ -91,8 +98,9 @@ AGENT_MODE=sdk DEEPSEEK_API_KEY=sk-... npm start
 
 | 变量 | 说明 |
 |------|------|
+| `BRIDGE_HOST` | 默认 `127.0.0.1`（本机 openresty）；Docker 内用 `0.0.0.0` |
 | `BRIDGE_PORT` | 默认 `8787` |
-| `BRIDGE_WEBHOOK_SECRET` | 可选 |
+| `BRIDGE_WEBHOOK_SECRET` / `ACCESS_TOKEN` | **必填**；空则首次启动自动生成 |
 | `WECHAT_CLIENT_BASE_URL` | 如 `http://127.0.0.1:9001` 或 `http://client_<CODE>:9001` |
 | `AGENT_MODE` | `sdk`（默认）或 `echo` |
 | `DSH_BIN` | 本地 dsh；空则解析 npm `@deepseek-ai/dsh` |

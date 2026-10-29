@@ -1,0 +1,29 @@
+# Join wechat-robot network; host openresty → http://127.0.0.1:8787
+services:
+  dsh-wechat-bridge:
+    image: node:24-bookworm
+    container_name: dsh-wechat-bridge
+    working_dir: /app
+    volumes:
+      - /opt/dsh-wechat-bridge:/app
+      - dsh_home:/app/.dsh-home
+    env_file:
+      - /opt/dsh-wechat-bridge/.env
+    environment:
+      BRIDGE_HOST: 0.0.0.0
+      BRIDGE_PORT: "8787"
+      WECHAT_CLIENT_BASE_URL: http://client_xTVn5dQNV3zQqjCD:9000
+      AGENT_MODE: sdk
+    command: ["node", "dist/index.js"]
+    ports:
+      - "127.0.0.1:8787:8787"
+    networks:
+      - wechat-robot
+    restart: unless-stopped
+
+volumes:
+  dsh_home:
+
+networks:
+  wechat-robot:
+    external: true
