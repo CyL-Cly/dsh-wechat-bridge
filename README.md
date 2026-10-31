@@ -59,6 +59,8 @@ http://<bridge主机>:8787/webhook
 http://dsh-wechat-bridge:8787/webhook
 ```
 
+去重：`NewMsgId`/`MsgId` 须为正数才作为键；皆 0/缺失时用 `(from,to,createTime,content_sha1[:16])` 合成键（与 AstrBot wechat_robot 适配器对齐），避免同会话后续消息被 10 分钟 TTL 误杀。
+
 **可选**鉴权：`BRIDGE_WEBHOOK_SECRET` 或 `ACCESS_TOKEN`（空 = 不鉴权，本机/反代场景可省略）。
 缺省/错误 token 的 `/webhook` 返回 **401**。
 

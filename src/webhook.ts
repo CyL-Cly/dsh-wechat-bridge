@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import type { InboundTextMessage, SyncMessagePayload, WebhookQuery, WechatRawMessage } from './types.js'
 
 const MSG_TYPE_TEXT = 1
@@ -80,8 +81,24 @@ function normalizeOne(
 
   const newMsgId = Number(m.NewMsgId ?? 0)
   const msgId = Number(m.MsgId ?? 0)
+  const createTime = Number(m.CreateTime ?? 0)
+  // Treat 0 / NaN / non-positive as missing (|| alone still collapses keys to ":0:").
+  const validId = (n: number): boolean => Number.isFinite(n) && n > 0
+  let dedupeKey: string
+  if (validId(newMsgId)) {
+    dedupeKey = `${robotCode}:${newMsgId}:${fromWxid}:${senderWxid}`
+  } else if (validId(msgId)) {
+    dedupeKey = `${robotCode}:${msgId}:${fromWxid}:${senderWxid}`
+  } else {
+    // Align with astrbot wechat_robot adapter synthetic key when both IDs absent/zero.
+    const digest = createHash('sha1')
+      .update(`${fromWxid}|${toWxid}|${createTime}|${rawContent}`, 'utf8')
+      .digest('hex')
+      .slice(0, 16)
+    dedupeKey = `${robotCode}:syn:${fromWxid}:${toWxid}:${createTime}:${digest}`
+  }
   return {
-    dedupeKey: `${robotCode}:${newMsgId || msgId}:${fromWxid}:${senderWxid}`,
+    dedupeKey,
     msgId,
     newMsgId,
     msgType,
@@ -90,7 +107,7 @@ function normalizeOne(
     senderWxid,
     text,
     isChatRoom: chatRoom,
-    createTime: Number(m.CreateTime ?? 0),
+    createTime,
     robotWxid,
     robotCode,
     robotId,

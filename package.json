@@ -1,6 +1,6 @@
 {
   "name": "dsh-wechat-bridge",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "DeepSeek Harness ↔ wechat-robot-client HTTP bridge：用 dsh 替换内置 AI 对话",
   "type": "module",
