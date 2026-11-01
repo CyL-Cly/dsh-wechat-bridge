@@ -3,7 +3,7 @@ import { loadConfig } from './config.js'
 import { DshAgent } from './dsh-agent.js'
 import { DedupeCache, sessionIdFor } from './session-map.js'
 import { extractInboundTexts } from './webhook.js'
-import { WechatRobotClient } from './wechat-client.js'
+import { WechatRobotClient, type RobotApiResult } from './wechat-client.js'
 import type { SyncMessagePayload, WebhookQuery } from './types.js'
 
 const cfg = loadConfig()
@@ -59,11 +59,28 @@ function send(res: ServerResponse, status: number, body: unknown): void {
   res.end(payload)
 }
 
-async function handleWebhook(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
-  if (!checkSecret(req)) {
-    send(res, 401, { ok: false, error: 'unauthorized', hint: 'missing or wrong token' })
-    return
+function requireSecret(req: IncomingMessage, res: ServerResponse): boolean {
+  if (checkSecret(req)) return true
+  send(res, 401, { ok: false, error: 'unauthorized', hint: 'missing or wrong token' })
+  return false
+}
+
+function sendRobotProxy(res: ServerResponse, result: RobotApiResult): void {
+  let data: unknown = result.body
+  try {
+    data = JSON.parse(result.body) as unknown
+  } catch {
+    /* keep raw string */
   }
+  send(res, result.ok ? 200 : result.status || 502, {
+    ok: result.ok,
+    status: result.status,
+    data,
+  })
+}
+
+async function handleWebhook(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
+  if (!requireSecret(req, res)) return
   const body = (await readJson(req)) as SyncMessagePayload
   const query = queryOf(url)
   const messages = extractInboundTexts(body, query, {
@@ -107,6 +124,55 @@ async function processOne(msg: Awaited<ReturnType<typeof extractInboundTexts>>[n
   }
 }
 
+/** Read-only Moments (朋友圈) thin proxy → wechat-robot-client /api/v1/robot/moments/* */
+async function handleMoments(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
+  if (!requireSecret(req, res)) return
+
+  const path = url.pathname
+  if (path === '/moments/list') {
+    const frist = url.searchParams.get('frist_page_md5') ?? ''
+    const maxId = url.searchParams.get('max_id') ?? '0'
+    sendRobotProxy(res, await wechat.momentsList(frist, maxId))
+    return
+  }
+  if (path === '/moments/user') {
+    const toWxid = url.searchParams.get('Towxid') ?? ''
+    if (!toWxid) {
+      send(res, 400, { ok: false, error: 'missing Towxid' })
+      return
+    }
+    const frist = url.searchParams.get('Fristpagemd5') ?? ''
+    const maxId = url.searchParams.get('Maxid') ?? '0'
+    sendRobotProxy(res, await wechat.momentsUserDetail(toWxid, frist, maxId))
+    return
+  }
+  if (path === '/moments/id') {
+    const toWxid = url.searchParams.get('Towxid') ?? ''
+    const id = url.searchParams.get('Id') ?? ''
+    if (!toWxid || !id) {
+      send(res, 400, { ok: false, error: 'missing Towxid or Id' })
+      return
+    }
+    sendRobotProxy(res, await wechat.momentsIdDetail(toWxid, id))
+    return
+  }
+  if (path === '/moments/sync') {
+    sendRobotProxy(res, await wechat.momentsSync())
+    return
+  }
+  if (path === '/moments/media') {
+    const mediaUrl = url.searchParams.get('url') ?? ''
+    if (!mediaUrl) {
+      send(res, 400, { ok: false, error: 'missing url' })
+      return
+    }
+    const key = url.searchParams.get('key') ?? ''
+    sendRobotProxy(res, await wechat.momentsDownMedia(mediaUrl, key))
+    return
+  }
+  send(res, 404, { ok: false, error: 'not found' })
+}
+
 const server = createServer((req, res) => {
   void (async () => {
     try {
@@ -120,11 +186,23 @@ const server = createServer((req, res) => {
           agentMode: cfg.agentMode,
           profile: cfg.dshProfile,
           auth: cfg.accessToken ? 'optional-token' : 'open',
+          moments: ['/moments/list', '/moments/user', '/moments/id', '/moments/sync', '/moments/media'],
         })
         return
       }
       if (req.method === 'POST' && (url.pathname === '/webhook' || url.pathname === '/wechat/webhook')) {
         await handleWebhook(req, res, url)
+        return
+      }
+      if (
+        req.method === 'GET' &&
+        (url.pathname === '/moments/list' ||
+          url.pathname === '/moments/user' ||
+          url.pathname === '/moments/id' ||
+          url.pathname === '/moments/sync' ||
+          url.pathname === '/moments/media')
+      ) {
+        await handleMoments(req, res, url)
         return
       }
       send(res, 404, { ok: false, error: 'not found' })
@@ -141,6 +219,9 @@ server.listen(cfg.port, cfg.host, () => {
   )
   console.log(
     `[dsh-wechat-bridge] webhook: POST /webhook  (auth: X-Bridge-Secret or Authorization: Bearer)`,
+  )
+  console.log(
+    `[dsh-wechat-bridge] moments: GET /moments/{list,user,id,sync,media}  (read-only; same auth)`,
   )
   console.log(
     `[dsh-wechat-bridge] openresty: proxy_pass http://127.0.0.1:${cfg.port}; + proxy_set_header X-Bridge-Secret <token>;`,

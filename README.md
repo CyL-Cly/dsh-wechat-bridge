@@ -79,6 +79,29 @@ Content-Type: application/json
 {"to_wxid":"<会话wxid>","content":"...","at":["群内发送者wxid"]}
 ```
 
+### 4. 朋友圈查询（只读代理）
+
+Bridge 把只读 Moments 请求转到 wechat-robot-client（**不含**发帖/评论/点赞）。鉴权同 webhook：`X-Bridge-Secret` 或 `Authorization: Bearer`（`ACCESS_TOKEN` / `BRIDGE_WEBHOOK_SECRET` 为空则开放）。
+
+| Bridge | Robot |
+|--------|-------|
+| `GET /moments/list?frist_page_md5=&max_id=0` | `/api/v1/robot/moments/list` |
+| `GET /moments/user?Towxid=&Fristpagemd5=&Maxid=0` | `/api/v1/robot/moments/get-detail` |
+| `GET /moments/id?Towxid=&Id=` | `/api/v1/robot/moments/get-id-detail` |
+| `GET /moments/sync` | `/api/v1/robot/moments/sync` |
+| `GET /moments/media?url=&key=` | `/api/v1/robot/moments/down-media` |
+
+响应形如 `{ "ok": true, "status": 200, "data": <robot JSON> }`。robot 侧列表参数名确为 `frist_page_md5`（历史拼写）。
+
+```bash
+curl -sS -H "X-Bridge-Secret: $ACCESS_TOKEN" \
+  "http://127.0.0.1:8787/moments/list?max_id=0"
+curl -sS -H "X-Bridge-Secret: $ACCESS_TOKEN" \
+  "http://127.0.0.1:8787/moments/user?Towxid=<好友wxid>&Maxid=0"
+curl -sS -H "X-Bridge-Secret: $ACCESS_TOKEN" \
+  "http://127.0.0.1:8787/moments/id?Towxid=<好友wxid>&Id=<momentId>"
+```
+
 ---
 
 ## 构建运行
